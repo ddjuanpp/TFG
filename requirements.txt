@@ -3,7 +3,6 @@ boto3
 faiss-cpu
 numpy
 PyPDF2
-python-docx
-python-pptx
 requests
 sentencepiece
+cohere
