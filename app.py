@@ -1,8 +1,26 @@
+# app.py
+
 import streamlit as st
 from documentos import DocumentUploader
-from busqueda import HuggingFaceAPI, AVAILABLE_MODELS
+from AI_model import analizar_documento_solo_texto
+from faiss_manager import FAISSManager
+import faiss
+import cohere
+import os
+from dotenv import load_dotenv
 
-# Configurar la página
+# Load environment variables
+load_dotenv()
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+
+# Ensure API key is loaded
+if not COHERE_API_KEY:
+    raise ValueError("⚠️ No se encontró la API Key de Cohere. Asegúrate de agregar COHERE_API_KEY en el archivo .env.")
+
+# Pass API key to FAISSManager
+faiss_manager = FAISSManager(api_key=COHERE_API_KEY)
+
+
 st.set_page_config(page_title="Análisis de Incidentes Marítimos", page_icon="🌊", layout="wide")
 
 # Preguntas clave para analizar incidentes marítimos
@@ -40,22 +58,11 @@ INCIDENT_QUESTIONS = [
 ]
 
 # ========== Instancias ==========
+
 doc_uploader = DocumentUploader()
 
-# Agregar selección de modelo en la interfaz
-selected_model = st.sidebar.selectbox(
-    "🧠 Selecciona el modelo de IA",
-    list(AVAILABLE_MODELS.keys()),
-    index=0  # Mistral 7B por defecto
-)
-
-# Inicializar API con el modelo seleccionado
-huggingface_api = HuggingFaceAPI(model_name=selected_model)
-
-# ========== Layout en dos columnas ==========
 col1, col2 = st.columns([1.5, 2])
 
-# ---------- Columna Izquierda ----------
 with col1:
     st.header("📂 Subir Reporte de Incidente Marítimo")
     uploaded_files = st.file_uploader(
@@ -63,7 +70,6 @@ with col1:
         accept_multiple_files=True,
         type=['pdf']
     )
-
     if uploaded_files:
         for file in uploaded_files:
             try:
@@ -72,23 +78,68 @@ with col1:
             except Exception as e:
                 st.error(f"❌ Error al procesar {file.name}: {e}")
 
-# ---------- Columna Derecha ----------
+# Si hay documentos, crea el índice FAISS
+if doc_uploader.get_documents():
+    documents = doc_uploader.get_documents()
+    faiss_manager.create_faiss_index(documents)
+
 with col2:
     st.title("🔎 Análisis del Incidente")
-
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
-            full_text = doc_uploader.get_concatenated_text()
-
             st.info("Procesando el documento y generando respuestas...")
             try:
-                responses = {}
-                for question in INCIDENT_QUESTIONS:
-                    # Generar respuesta para cada pregunta
-                    answer = huggingface_api.generar_pregunta(full_text, question)
-                    responses[question] = answer
+                # Dividir las preguntas en 3 lotes de 10 preguntas cada uno
+                question_batches = [
+                    INCIDENT_QUESTIONS[:10],  # Primera tanda
+                    INCIDENT_QUESTIONS[10:20],  # Segunda tanda
+                    INCIDENT_QUESTIONS[20:]  # Tercera tanda
+                ]
 
-                # Mostrar respuestas en la interfaz
+                responses = {}
+
+                for batch_index, batch_questions in enumerate(question_batches, start=1):
+                    st.write(f"### 🔍 Procesando Tanda {batch_index}...")
+
+                    # Obtener contexto relevante de FAISS para las preguntas de la tanda actual
+                    all_context_chunks = []
+                    for question in batch_questions:
+                        question_embedding = faiss_manager.generate_embeddings([question])
+                        faiss.normalize_L2(question_embedding)
+
+                        # Obtener los 5 chunks más relevantes por pregunta
+                        k = 5
+                        distances, indices = faiss_manager.index.search(question_embedding, k)
+                        relevant_chunks = [faiss_manager.chunks[idx] for idx in indices[0] if idx >= 0]
+                        all_context_chunks.extend(relevant_chunks)
+
+                    # Unir los chunks de contexto en un solo bloque de texto
+                    context_text = "\n".join(set(all_context_chunks))  # Eliminar duplicados
+
+                    # Crear un único prompt con las preguntas de la tanda
+                    prompt = f"Por favor, contesta en español cada una de las siguientes preguntas basándote en el CONTEXTO proporcionado para la Tanda {batch_index}.\n\n"
+                    prompt += f"CONTEXTO:\n{context_text}\n\n"
+
+                    for idx, question in enumerate(batch_questions, start=1):
+                        prompt += f"{idx}. {question}\n"
+
+                    prompt += "\nProporcione cada respuesta en el mismo formato numérico de las preguntas.\n"
+
+                    # Llamar a Cohere con la tanda actual
+                    answer_str = analizar_documento_solo_texto(prompt)
+
+                    # Procesar la respuesta de Cohere
+                    answer_lines = answer_str.strip().split("\n")
+
+                    for line in answer_lines:
+                        parts = line.split(". ", 1)
+                        if len(parts) == 2 and parts[0].isdigit():
+                            num, answer = parts
+                            question_index = (batch_index - 1) * 10 + int(num) - 1
+                            if 0 <= question_index < len(INCIDENT_QUESTIONS):
+                                responses[INCIDENT_QUESTIONS[question_index]] = answer.strip()
+
+                # Mostrar resultados en Streamlit
                 st.subheader("📋 Resumen del Incidente")
                 for i, (question, answer) in enumerate(responses.items()):
                     st.write(f"**{i+1}. {question}**")
@@ -96,7 +147,5 @@ with col2:
 
             except Exception as e:
                 st.error(f"❌ Error al analizar el documento: {e}")
-
         else:
             st.warning("⚠️ Primero sube un archivo PDF.")
-
