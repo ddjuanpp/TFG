@@ -2,17 +2,17 @@
 
 import faiss
 import numpy as np
-import cohere
+from mistralai import Mistral
 import os
 from dotenv import load_dotenv
 
 class FAISSManager:
     def __init__(self, api_key):
         """
-        Inicializa el FAISS Manager con la API Key de Cohere.
+        Inicializa el FAISS Manager con la API Key de Mistral.
         """
         self.api_key = api_key
-        self.cohere_client = cohere.Client(api_key)  # Inicializa el cliente de Cohere
+        self.mistral_client = Mistral(api_key=api_key)  # Inicializa el cliente de Mistral
         self.index = None
         self.chunks = []  # Guardamos el texto de cada chunk
         self.dim = None   # Dimensión de embeddings (se define tras la primera llamada)
@@ -29,28 +29,30 @@ class FAISSManager:
 
     def generate_embeddings(self, texts):
         """
-        Genera embeddings usando Cohere (modelo embed-multilingual-v3.0).
+        Genera embeddings usando Mistral (modelo mistral-embed).
         Parámetros:
         - texts: lista de strings.
-        Retorna: np.array de forma (len(texts), embedding_dim)
+        Retorna:
+        - np.array de forma (len(texts), embedding_dim)
         """
-        response = self.cohere_client.embed(
-            texts=texts,
-            model="embed-multilingual-v3.0",
-            input_type="search_document"  # Se requiere para embeddings de documentos
+        response = self.mistral_client.embeddings.create(
+            model="mistral-embed",
+            inputs=texts
         )
 
-        if not response.embeddings:
+        # Si la respuesta contiene 'data', extraemos las embeddings
+        if hasattr(response, "data") and response.data:
+            embeddings_list = [item.embedding for item in response.data]
+        else:
             raise Exception(f"Error al obtener embeddings: {response}")
 
-        # Convertimos a array de floats
-        return np.array(response.embeddings, dtype=np.float32)
+        return np.array(embeddings_list, dtype=np.float32)
 
 
     def create_faiss_index(self, docs):
         """
         1) Divide todos los documentos en chunks.
-        2) Genera embeddings para cada chunk (en lotes) usando Cohere.
+        2) Genera embeddings para cada chunk (en lotes) usando Mistral.
         3) Crea y entrena el índice FAISS.
         """
         # 1) Crear chunks

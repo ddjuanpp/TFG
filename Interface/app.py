@@ -2,26 +2,29 @@
 
 import streamlit as st
 from documentos import DocumentUploader
-from AI_model import analizar_documento_solo_texto
-from faiss_manager import FAISSManager
+from AI_model import analizar_documento_solo_texto  # Versión adaptada a Mistral
+from faiss_manager import FAISSManager              # Versión adaptada a Mistral
 import faiss
-import cohere
 import os
 from dotenv import load_dotenv
+import time
 
-# Load environment variables
+# Cargar variables de entorno
 load_dotenv()
-COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-# Ensure API key is loaded
-if not COHERE_API_KEY:
-    raise ValueError("⚠️ No se encontró la API Key de Cohere. Asegúrate de agregar COHERE_API_KEY en el archivo .env.")
+# Verificar si la API Key está configurada
+if not MISTRAL_API_KEY:
+    raise ValueError("⚠️ No se encontró la API Key de Mistral. Asegúrate de agregar MISTRAL_API_KEY en el archivo .env.")
 
-# Pass API key to FAISSManager
-faiss_manager = FAISSManager(api_key=COHERE_API_KEY)
+# Instanciar el FAISSManager con la API Key de Mistral
+faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY)
 
-
-st.set_page_config(page_title="Análisis de Incidentes Marítimos", page_icon="🌊", layout="wide")
+st.set_page_config(
+    page_title="Análisis de Incidentes Marítimos",
+    page_icon="🌊",
+    layout="wide"
+)
 
 # Preguntas clave para analizar incidentes marítimos
 INCIDENT_QUESTIONS = [
@@ -57,12 +60,12 @@ INCIDENT_QUESTIONS = [
     "Was there a significant change in the vessel's position before and after the incident? (Calculate the distance traveled in nautical miles, or the change in latitude/longitude)"
 ]
 
-# ========== Instancias ==========
-
+# Instancias
 doc_uploader = DocumentUploader()
 
 col1, col2 = st.columns([1.5, 2])
 
+# ========== Panel de subida de archivos ==========
 with col1:
     st.header("📂 Subir Reporte de Incidente Marítimo")
     uploaded_files = st.file_uploader(
@@ -78,72 +81,84 @@ with col1:
             except Exception as e:
                 st.error(f"❌ Error al procesar {file.name}: {e}")
 
-# Si hay documentos, crea el índice FAISS
+# Crear el índice FAISS si hay documentos
 if doc_uploader.get_documents():
     documents = doc_uploader.get_documents()
     faiss_manager.create_faiss_index(documents)
 
+# ========== Panel de análisis ==========
 with col2:
     st.title("🔎 Análisis del Incidente")
+
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
             st.info("Procesando el documento y generando respuestas...")
             try:
-                # Dividir las preguntas en 3 lotes de 10 preguntas cada uno
-                question_batches = [
-                    INCIDENT_QUESTIONS[:10],  # Primera tanda
-                    INCIDENT_QUESTIONS[10:20],  # Segunda tanda
-                    INCIDENT_QUESTIONS[20:]  # Tercera tanda
-                ]
-
                 responses = {}
+                batch_size = 5  # Reducido para disminuir la carga de solicitudes
+                question_embeddings = faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
+                faiss.normalize_L2(question_embeddings)
 
-                for batch_index, batch_questions in enumerate(question_batches, start=1):
-                    st.write(f"### 🔍 Procesando Tanda {batch_index}...")
+                for batch_index in range(0, len(INCIDENT_QUESTIONS), batch_size):
+                    current_questions = INCIDENT_QUESTIONS[batch_index: batch_index + batch_size]
+                    current_embeddings = question_embeddings[batch_index: batch_index + batch_size]
 
-                    # Obtener contexto relevante de FAISS para las preguntas de la tanda actual
                     all_context_chunks = []
-                    for question in batch_questions:
-                        question_embedding = faiss_manager.generate_embeddings([question])
-                        faiss.normalize_L2(question_embedding)
-
-                        # Obtener los 5 chunks más relevantes por pregunta
+                    for emb in current_embeddings:
                         k = 5
-                        distances, indices = faiss_manager.index.search(question_embedding, k)
+                        distances, indices = faiss_manager.index.search(emb.reshape(1, -1), k)
                         relevant_chunks = [faiss_manager.chunks[idx] for idx in indices[0] if idx >= 0]
                         all_context_chunks.extend(relevant_chunks)
 
-                    # Unir los chunks de contexto en un solo bloque de texto
-                    context_text = "\n".join(set(all_context_chunks))  # Eliminar duplicados
+                    unique_chunks = list(set(all_context_chunks))
+                    context_text = "\n".join(unique_chunks)
 
-                    # Crear un único prompt con las preguntas de la tanda
-                    prompt = f"Por favor, contesta en español cada una de las siguientes preguntas basándote en el CONTEXTO proporcionado para la Tanda {batch_index}.\n\n"
-                    prompt += f"CONTEXTO:\n{context_text}\n\n"
-
-                    for idx, question in enumerate(batch_questions, start=1):
-                        prompt += f"{idx}. {question}\n"
-
+                    prompt = (
+                        "Por favor, contesta en español cada una de las siguientes preguntas basándote en el CONTEXTO.\n\n"
+                        f"CONTEXTO:\n{context_text}\n\n"
+                    )
+                    for i, question in enumerate(current_questions, start=batch_index+1):
+                        prompt += f"{i}. {question}\n"
                     prompt += "\nProporcione cada respuesta en el mismo formato numérico de las preguntas.\n"
 
-                    # Llamar a Cohere con la tanda actual
-                    answer_str = analizar_documento_solo_texto(prompt)
+                    # Implementar reintentos con mayor espera en caso de error 429
+                    retries = 0
+                    max_retries = 7
+                    delay = 5  # Inicio con 5 segundos de espera
+                    while retries < max_retries:
+                        try:
+                            answer_str = analizar_documento_solo_texto(prompt)
+                            break  # Si sale bien, se sale del bucle
+                        except Exception as e:
+                            if "429" in str(e):
+                                st.warning(f"Rate limit excedido. Reintentando en {delay} segundos... (Intento {retries+1}/{max_retries})")
+                                time.sleep(delay)
+                                delay *= 2  # Incremento exponencial del tiempo de espera
+                                retries += 1
+                            else:
+                                raise Exception(e)
+                    else:
+                        raise Exception("Se alcanzó el máximo de reintentos debido a la tasa de solicitudes.")
 
-                    # Procesar la respuesta de Cohere
+                    # Procesar la respuesta del modelo
                     answer_lines = answer_str.strip().split("\n")
-
                     for line in answer_lines:
                         parts = line.split(". ", 1)
                         if len(parts) == 2 and parts[0].isdigit():
-                            num, answer = parts
-                            question_index = (batch_index - 1) * 10 + int(num) - 1
-                            if 0 <= question_index < len(INCIDENT_QUESTIONS):
-                                responses[INCIDENT_QUESTIONS[question_index]] = answer.strip()
+                            num = int(parts[0])
+                            respuesta = parts[1].strip()
+                            if 1 <= num <= len(INCIDENT_QUESTIONS):
+                                responses[INCIDENT_QUESTIONS[num - 1]] = respuesta
 
-                # Mostrar resultados en Streamlit
+                    time.sleep(2)
+
                 st.subheader("📋 Resumen del Incidente")
-                for i, (question, answer) in enumerate(responses.items()):
-                    st.write(f"**{i+1}. {question}**")
-                    st.write(f"➡️ **Respuesta:** {answer}")
+                for i, question in enumerate(INCIDENT_QUESTIONS, start=1):
+                    st.write(f"**{i}. {question}**")
+                    if question in responses:
+                        st.write(f"➡️ **Respuesta:** {responses[question]}")
+                    else:
+                        st.write("➡️ **Respuesta:** No se encontró una respuesta en el texto generado.")
 
             except Exception as e:
                 st.error(f"❌ Error al analizar el documento: {e}")
