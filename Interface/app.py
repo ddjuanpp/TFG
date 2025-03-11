@@ -9,15 +9,16 @@ import os
 from dotenv import load_dotenv
 import time
 
+# Importa la función para guardar a Excel
+from excel import save_answers_to_excel
+
 # Cargar variables de entorno
 load_dotenv()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-# Verificar si la API Key está configurada
 if not MISTRAL_API_KEY:
-    raise ValueError("⚠️ No se encontró la API Key de Mistral. Asegúrate de agregar MISTRAL_API_KEY en el archivo .env.")
+    raise ValueError("⚠️ No se encontró la API Key de Mistral.")
 
-# Instanciar el FAISSManager con la API Key de Mistral
 faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY)
 
 st.set_page_config(
@@ -26,7 +27,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Preguntas clave para analizar incidentes marítimos
 INCIDENT_QUESTIONS = [
     "At what time did the incident occur?",
     "Who is the vessel’s owner?",
@@ -60,12 +60,10 @@ INCIDENT_QUESTIONS = [
     "Was there a significant change in the vessel's position before and after the incident? (Calculate the distance traveled in nautical miles, or the change in latitude/longitude)"
 ]
 
-# Instancias
 doc_uploader = DocumentUploader()
 
 col1, col2 = st.columns([1.5, 2])
 
-# ========== Panel de subida de archivos ==========
 with col1:
     st.header("📂 Subir Reporte de Incidente Marítimo")
     uploaded_files = st.file_uploader(
@@ -81,12 +79,10 @@ with col1:
             except Exception as e:
                 st.error(f"❌ Error al procesar {file.name}: {e}")
 
-# Crear el índice FAISS si hay documentos
 if doc_uploader.get_documents():
     documents = doc_uploader.get_documents()
     faiss_manager.create_faiss_index(documents)
 
-# ========== Panel de análisis ==========
 with col2:
     st.title("🔎 Análisis del Incidente")
 
@@ -95,7 +91,7 @@ with col2:
             st.info("Procesando el documento y generando respuestas...")
             try:
                 responses = {}
-                batch_size = 5  # Reducido para disminuir la carga de solicitudes
+                batch_size = 5
                 question_embeddings = faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
                 faiss.normalize_L2(question_embeddings)
 
@@ -114,33 +110,35 @@ with col2:
                     context_text = "\n".join(unique_chunks)
 
                     prompt = (
-                        "Por favor, contesta en español cada una de las siguientes preguntas basándote en el CONTEXTO.\n\n"
+                        "Por favor, contesta en español cada una de las siguientes preguntas "
+                        "basándote en el CONTEXTO.\n\n"
                         f"CONTEXTO:\n{context_text}\n\n"
                     )
                     for i, question in enumerate(current_questions, start=batch_index+1):
                         prompt += f"{i}. {question}\n"
                     prompt += "\nProporcione cada respuesta en el mismo formato numérico de las preguntas.\n"
 
-                    # Implementar reintentos con mayor espera en caso de error 429
                     retries = 0
                     max_retries = 7
-                    delay = 5  # Inicio con 5 segundos de espera
+                    delay = 5
                     while retries < max_retries:
                         try:
                             answer_str = analizar_documento_solo_texto(prompt)
-                            break  # Si sale bien, se sale del bucle
+                            break
                         except Exception as e:
                             if "429" in str(e):
-                                st.warning(f"Rate limit excedido. Reintentando en {delay} segundos... (Intento {retries+1}/{max_retries})")
+                                st.warning(
+                                    f"Rate limit excedido. Reintentando en {delay} segundos... "
+                                    f"(Intento {retries+1}/{max_retries})"
+                                )
                                 time.sleep(delay)
-                                delay *= 2  # Incremento exponencial del tiempo de espera
+                                delay *= 2
                                 retries += 1
                             else:
                                 raise Exception(e)
                     else:
                         raise Exception("Se alcanzó el máximo de reintentos debido a la tasa de solicitudes.")
 
-                    # Procesar la respuesta del modelo
                     answer_lines = answer_str.strip().split("\n")
                     for line in answer_lines:
                         parts = line.split(". ", 1)
@@ -158,7 +156,29 @@ with col2:
                     if question in responses:
                         st.write(f"➡️ **Respuesta:** {responses[question]}")
                     else:
-                        st.write("➡️ **Respuesta:** No se encontró una respuesta en el texto generado.")
+                        st.write("➡️ **Respuesta:** No se encontró respuesta en el texto generado.")
+
+                # ===================================================
+                # Guardar las respuestas en Excel y mostrar botón de descarga
+                # ===================================================
+                # Por cada PDF subido, generamos un Excel con el mismo nombre:
+                for file in uploaded_files:
+                    pdf_filename = file.name
+                    excel_filename = save_answers_to_excel(
+                        pdf_filename=pdf_filename,
+                        questions=INCIDENT_QUESTIONS,
+                        responses=responses
+                    )
+                    st.success(f"Excel creado: {excel_filename}")
+
+                    # Añadimos botón de descarga:
+                    with open(excel_filename, "rb") as f:
+                        st.download_button(
+                            label="Descargar Excel",
+                            data=f,
+                            file_name=excel_filename,  # Aquí el usuario se descarga el mismo nombre
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
             except Exception as e:
                 st.error(f"❌ Error al analizar el documento: {e}")
