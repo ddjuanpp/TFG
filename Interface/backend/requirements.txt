@@ -1,0 +1,12 @@
+streamlit
+boto3
+faiss-cpu
+numpy
+PyPDF2
+requests
+sentencepiece
+cohere
+mistralai
+flask
+dotenv
+openpyxl

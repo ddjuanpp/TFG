@@ -1,0 +1,104 @@
+/* App.css */
+
+/* Estilos generales */
+body {
+  margin: 0;
+  font-family: 'Open Sans', sans-serif;
+  background-color: #f5f5f5;
+}
+
+/* Contenedor principal de la aplicación */
+.App {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Encabezado */
+.App-header {
+  background-color: #282c34;
+  padding: 2rem;
+  text-align: center;
+}
+
+.App-header h1 {
+  color: #fff;
+  margin: 0;
+  font-size: 2rem;
+}
+
+/* Contenido principal */
+main {
+  flex: 1;
+  max-width: 800px; /* Ancho máximo del contenedor */
+  width: 100%;
+  margin: 2rem auto; /* Centrar horizontalmente */
+  padding: 2rem;
+  background-color: #fff;
+  border-radius: 8px; 
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+/* Secciones dentro del main */
+section {
+  margin-bottom: 2rem;
+}
+
+section h2 {
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+/* Botones */
+button {
+  background-color: #007BFF; /* Azul primario */
+  color: #fff;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 4px;
+  margin-top: 0.5rem;
+  margin-right: 1rem;
+  transition: background-color 0.3s ease;
+}
+
+button:hover {
+  background-color: #0056b3; /* Azul más oscuro al pasar el mouse */
+}
+
+button:disabled {
+  background-color: #aaa;
+  cursor: not-allowed;
+}
+
+/* Inputs */
+input[type="file"] {
+  margin-right: 1rem;
+}
+
+/* Mensajes */
+p {
+  margin: 0.5rem 0;
+  color: #555;
+}
+
+/* Listas */
+ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+li {
+  margin-bottom: 0.5rem;
+}
+
+/* Enlaces */
+a {
+  color: #007BFF;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
