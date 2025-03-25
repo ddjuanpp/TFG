@@ -1,5 +1,3 @@
-# app.py
-
 import streamlit as st
 from documentos import DocumentUploader
 from AI_model import analizar_documento_solo_texto  # Versión adaptada a Mistral
@@ -9,8 +7,8 @@ import os
 from dotenv import load_dotenv
 import time
 
-# Importa la función para guardar a Excel
-from excel import save_answers_to_excel
+# Importa la nueva función para guardar todos los resultados en un Excel
+from excel import append_answers_to_excel  
 
 # Cargar variables de entorno
 load_dotenv()
@@ -18,8 +16,6 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 if not MISTRAL_API_KEY:
     raise ValueError("⚠️ No se encontró la API Key de Mistral.")
-
-faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY)
 
 st.set_page_config(
     page_title="Análisis de Incidentes Marítimos",
@@ -79,45 +75,56 @@ with col1:
             except Exception as e:
                 st.error(f"❌ Error al procesar {file.name}: {e}")
 
-if doc_uploader.get_documents():
-    documents = doc_uploader.get_documents()
-    faiss_manager.create_faiss_index(documents)
-
 with col2:
     st.title("🔎 Análisis del Incidente")
-
+    
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
-            st.info("Procesando el documento y generando respuestas...")
-            try:
-                responses = {}
-                batch_size = 5
-                question_embeddings = faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
+            st.info("Procesando los documentos y generando respuestas...")
+            results = []
+            documents = doc_uploader.get_documents()
+            
+            for idx, file in enumerate(uploaded_files):
+                document_text = documents[idx]
+                # Crear un FAISS index local para el documento actual
+                local_faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY)
+                local_faiss_manager.create_faiss_index([document_text])
+                
+                local_responses = {}
+                # Generar embeddings para las preguntas
+                question_embeddings = local_faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
                 faiss.normalize_L2(question_embeddings)
-
+                
+                batch_size = 5
                 for batch_index in range(0, len(INCIDENT_QUESTIONS), batch_size):
                     current_questions = INCIDENT_QUESTIONS[batch_index: batch_index + batch_size]
                     current_embeddings = question_embeddings[batch_index: batch_index + batch_size]
-
+                    
                     all_context_chunks = []
                     for emb in current_embeddings:
                         k = 5
-                        distances, indices = faiss_manager.index.search(emb.reshape(1, -1), k)
-                        relevant_chunks = [faiss_manager.chunks[idx] for idx in indices[0] if idx >= 0]
+                        distances, indices = local_faiss_manager.index.search(emb.reshape(1, -1), k)
+                        relevant_chunks = [local_faiss_manager.chunks[i] for i in indices[0] if i >= 0]
                         all_context_chunks.extend(relevant_chunks)
-
+                    
                     unique_chunks = list(set(all_context_chunks))
                     context_text = "\n".join(unique_chunks)
-
+                    
                     prompt = (
-                        "Por favor, contesta en español cada una de las siguientes preguntas "
-                        "basándote en el CONTEXTO.\n\n"
+                        "Por favor, contesta en **español** cada una de las siguientes preguntas "
+                        "basándote en el CONTEXTO, **de forma breve y concisa**. "
+                        "Si la información **no se menciona** en el CONTEXTO, responde con **'-'**.\n\n"
                         f"CONTEXTO:\n{context_text}\n\n"
                     )
+
                     for i, question in enumerate(current_questions, start=batch_index+1):
                         prompt += f"{i}. {question}\n"
-                    prompt += "\nProporcione cada respuesta en el mismo formato numérico de las preguntas.\n"
 
+                    prompt += (
+                        "\nProporcione cada respuesta en el mismo formato numérico de las preguntas, "
+                        "sin añadir explicaciones adicionales.\n"
+                    )
+                    
                     retries = 0
                     max_retries = 7
                     delay = 5
@@ -138,7 +145,7 @@ with col2:
                                 raise Exception(e)
                     else:
                         raise Exception("Se alcanzó el máximo de reintentos debido a la tasa de solicitudes.")
-
+                    
                     answer_lines = answer_str.strip().split("\n")
                     for line in answer_lines:
                         parts = line.split(". ", 1)
@@ -146,41 +153,35 @@ with col2:
                             num = int(parts[0])
                             respuesta = parts[1].strip()
                             if 1 <= num <= len(INCIDENT_QUESTIONS):
-                                responses[INCIDENT_QUESTIONS[num - 1]] = respuesta
-
+                                local_responses[INCIDENT_QUESTIONS[num - 1]] = respuesta
                     time.sleep(2)
-
-                st.subheader("📋 Resumen del Incidente")
+                
+                results.append({
+                    "name": file.name,
+                    "IA_model": "mistral-large-latest",
+                    "responses": local_responses
+                })
+            
+            st.subheader("📋 Resumen de los Incidentes")
+            for result in results:
+                st.write(f"**Documento: {result['name']}**")
                 for i, question in enumerate(INCIDENT_QUESTIONS, start=1):
+                    respuesta = result["responses"].get(question, "-")
                     st.write(f"**{i}. {question}**")
-                    if question in responses:
-                        st.write(f"➡️ **Respuesta:** {responses[question]}")
-                    else:
-                        st.write("➡️ **Respuesta:** No se encontró respuesta en el texto generado.")
+                    st.write(f"➡️ **Respuesta:** {respuesta}")
+                st.write("---")
 
-                # ===================================================
-                # Guardar las respuestas en Excel y mostrar botón de descarga
-                # ===================================================
-                # Por cada PDF subido, generamos un Excel con el mismo nombre:
-                for file in uploaded_files:
-                    pdf_filename = file.name
-                    excel_filename = save_answers_to_excel(
-                        pdf_filename=pdf_filename,
-                        questions=INCIDENT_QUESTIONS,
-                        responses=responses
-                    )
-                    st.success(f"Excel creado: {excel_filename}")
-
-                    # Añadimos botón de descarga:
-                    with open(excel_filename, "rb") as f:
-                        st.download_button(
-                            label="Descargar Excel",
-                            data=f,
-                            file_name=excel_filename,  # Aquí el usuario se descarga el mismo nombre
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-
-            except Exception as e:
-                st.error(f"❌ Error al analizar el documento: {e}")
+            # Aquí usamos append_answers_to_excel en lugar de sobrescribir
+            excel_filename = append_answers_to_excel(results, INCIDENT_QUESTIONS, save_path="../resultados.xlsx")
+            st.success(f"Excel actualizado: {excel_filename}")
+            
+            # Botón de descarga
+            with open(excel_filename, "rb") as f:
+                st.download_button(
+                    label="Descargar Excel",
+                    data=f,
+                    file_name=os.path.basename(excel_filename),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         else:
             st.warning("⚠️ Primero sube un archivo PDF.")
