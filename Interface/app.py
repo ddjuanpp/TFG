@@ -1,6 +1,6 @@
 import streamlit as st
 from documentos import DocumentUploader
-from AI_model import analizar_documento_solo_texto  # Versión adaptada a Mistral
+from AI_model import analizar_documento_mistral, analizar_documento_openai, analizar_documento_groq # Versión adaptada a Mistral y OpenAI
 from faiss_manager import FAISSManager              # Versión adaptada a Mistral
 import faiss
 import os
@@ -13,9 +13,10 @@ from excel import append_answers_to_excel
 # Cargar variables de entorno
 load_dotenv()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-
-if not MISTRAL_API_KEY:
-    raise ValueError("⚠️ No se encontró la API Key de Mistral.")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not MISTRAL_API_KEY and not OPENAI_API_KEY and not GROQ_API_KEY:
+    raise ValueError("⚠️ No se encontró la API Key de Mistral ni OpenAI.")
 
 st.set_page_config(
     page_title="Análisis de Incidentes Marítimos",
@@ -25,10 +26,10 @@ st.set_page_config(
 
 INCIDENT_QUESTIONS = [
     "At what time did the incident occur?",
-    "Who is the vessel’s owner?",
+    "Who is the vessel's owner?",
     "Where was the vessel heading?",
     "Was there any routine activity, such as a crew member preparing food or drinks, at the time of the incident?",
-    "What was the vessel’s speed when it began to experience difficulty (e.g., grounding, collision, etc.)?",
+    "What was the vessel's speed when it began to experience difficulty (e.g., grounding, collision, etc.)?",
     "When was the vessel built?",
     "Did the accident have any fatalities?",
     "Was the vessel operating under normal conditions when the incident occurred?",
@@ -40,9 +41,9 @@ INCIDENT_QUESTIONS = [
     "What did the crew member consume before heading to their post?",
     "What type or model of rescue boat was involved in the response to the accident?",
     "Where did the crew member retrieve safety equipment (e.g., lifejackets, knives, flotation devices) from onboard the vessel?",
-    "Was there any communication from the vessel’s crew to nearby ships or maritime authorities before the incident?",
+    "Was there any communication from the vessel's crew to nearby ships or maritime authorities before the incident?",
     "Were there any previous accidents or incidents involving this vessel?",
-    "Was the vessel’s cargo secure at the time of the incident?",
+    "Was the vessel's cargo secure at the time of the incident?",
     "Was the crew properly trained for handling emergency situations?",
     "What was the time in the GMT+1 time zone when the incident occurred?",
     "How many people were onboard at the time of the accident, and who were they?",
@@ -78,6 +79,9 @@ with col1:
 with col2:
     st.title("🔎 Análisis del Incidente")
     
+    # Agregar un selector para elegir el modelo (incluyendo Groq)
+    modelo_seleccionado = st.selectbox("Selecciona el modelo de IA:", ["mistral-large-latest", "gpt-4o-mini", "llama3-8b-8192"])
+
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
             st.info("Procesando los documentos y generando respuestas...")
@@ -86,15 +90,16 @@ with col2:
             
             for idx, file in enumerate(uploaded_files):
                 document_text = documents[idx]
-                # Crear un FAISS index local para el documento actual
-                local_faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY)
+                # Usar Mistral para Groq también
+                local_faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY if modelo_seleccionado == "mistral-large-latest" else OPENAI_API_KEY)
                 local_faiss_manager.create_faiss_index([document_text])
                 
                 local_responses = {}
-                # Generar embeddings para las preguntas
                 question_embeddings = local_faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
                 faiss.normalize_L2(question_embeddings)
                 
+                time.sleep(2)
+
                 batch_size = 5
                 for batch_index in range(0, len(INCIDENT_QUESTIONS), batch_size):
                     current_questions = INCIDENT_QUESTIONS[batch_index: batch_index + batch_size]
@@ -111,18 +116,19 @@ with col2:
                     context_text = "\n".join(unique_chunks)
                     
                     prompt = (
-                        "Por favor, contesta en **español** cada una de las siguientes preguntas "
-                        "basándote en el CONTEXTO, **de forma breve y concisa**. "
-                        "Si la información **no se menciona** en el CONTEXTO, responde con **'-'**.\n\n"
-                        f"CONTEXTO:\n{context_text}\n\n"
+                        "Please answer each of the following questions based on the CONTEXT provided.\n"
+                        "Whenever possible, extract the **full expression or complete phrase** exactly as it appears in the CONTEXT.\n"
+                        "If the information is not mentioned, respond with '-'.\n"
+                        "Be precise and preserve details such as approximate times, dates, measurements, and any qualifiers (e.g., 'about', 'approximately').\n\n"
+                        f"CONTEXT:\n{context_text}\n\n"
                     )
 
-                    for i, question in enumerate(current_questions, start=batch_index+1):
+                    for i, question in enumerate(current_questions, start=batch_index + 1):
                         prompt += f"{i}. {question}\n"
 
                     prompt += (
-                        "\nProporcione cada respuesta en el mismo formato numérico de las preguntas, "
-                        "sin añadir explicaciones adicionales.\n"
+                        "\nProvide each answer with the same numeric format as the questions, "
+                        "without adding additional explanations.\n"
                     )
                     
                     retries = 0
@@ -130,16 +136,26 @@ with col2:
                     delay = 5
                     while retries < max_retries:
                         try:
-                            answer_str = analizar_documento_solo_texto(prompt)
+                            
+                            if modelo_seleccionado == "mistral-large-latest":
+                                answer_str, model_used = analizar_documento_mistral(prompt)
+                            elif modelo_seleccionado == "llama3-8b-8192":
+                                answer_str, model_used = analizar_documento_groq(prompt)  # Usar Groq para la generación
+                            else:
+                                answer_str, model_used = analizar_documento_openai(prompt)
+
+                            if answer_str is None:
+                                raise ValueError("La respuesta del modelo es None. Verifica la configuración del modelo o la API.")
+
                             break
                         except Exception as e:
                             if "429" in str(e):
                                 st.warning(
-                                    f"Rate limit excedido. Reintentando en {delay} segundos... "
-                                    f"(Intento {retries+1}/{max_retries})"
+                                    f"Rate limit exceeded. Retrying in {delay} seconds... "
+                                    f"(Attempt {retries + 1}/{max_retries})"
                                 )
                                 time.sleep(delay)
-                                delay *= 2
+                                delay = 2
                                 retries += 1
                             else:
                                 raise Exception(e)
@@ -154,11 +170,12 @@ with col2:
                             respuesta = parts[1].strip()
                             if 1 <= num <= len(INCIDENT_QUESTIONS):
                                 local_responses[INCIDENT_QUESTIONS[num - 1]] = respuesta
+                    
                     time.sleep(2)
                 
                 results.append({
                     "name": file.name,
-                    "IA_model": "mistral-large-latest",
+                    "IA_model": model_used,
                     "responses": local_responses
                 })
             
@@ -171,11 +188,9 @@ with col2:
                     st.write(f"➡️ **Respuesta:** {respuesta}")
                 st.write("---")
 
-            # Aquí usamos append_answers_to_excel en lugar de sobrescribir
             excel_filename = append_answers_to_excel(results, INCIDENT_QUESTIONS, save_path="../resultados.xlsx")
             st.success(f"Excel actualizado: {excel_filename}")
             
-            # Botón de descarga
             with open(excel_filename, "rb") as f:
                 st.download_button(
                     label="Descargar Excel",

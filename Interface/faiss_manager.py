@@ -5,6 +5,14 @@ import numpy as np
 from mistralai import Mistral
 import os
 from dotenv import load_dotenv
+import openai
+import time
+import groq
+
+load_dotenv()
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 class FAISSManager:
     def __init__(self, api_key):
@@ -27,7 +35,7 @@ class FAISSManager:
             start = end
         return chunks
 
-    def generate_embeddings(self, texts):
+    def generate_embeddings_mistral(self, texts):
         """
         Genera embeddings usando Mistral (modelo mistral-embed).
         Parámetros:
@@ -35,19 +43,65 @@ class FAISSManager:
         Retorna:
         - np.array de forma (len(texts), embedding_dim)
         """
-        response = self.mistral_client.embeddings.create(
-            model="mistral-embed",
-            inputs=texts
+        retries = 0
+        max_retries = 5
+        delay = 2  # Pausa inicial de 2 segundos
+
+        while retries < max_retries:
+            try:
+                response = self.mistral_client.embeddings.create(
+                    model="mistral-embed",
+                    inputs=texts
+                )
+
+                if hasattr(response, "data") and response.data:
+                    embeddings_list = [item.embedding for item in response.data]
+                else:
+                    raise Exception(f"Error al obtener embeddings: {response}")
+
+                return np.array(embeddings_list, dtype=np.float32)
+
+            except Exception as e:
+                if "401" in str(e):
+                    raise Exception("Error de autenticación: Verifica tu API Key de Mistral.")
+                elif "429" in str(e):
+                    print(f"Rate limit exceeded. Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    retries += 1
+                    delay *= 2
+                else:
+                    raise  # Re-lanzar la excepción si no es un error de límite de tasa
+
+        raise Exception("Se alcanzó el máximo de reintentos debido a la tasa de solicitudes.")
+
+    def generate_embeddings_openai(self, texts):
+        """
+        Genera embeddings usando OpenAI.
+        Parámetros:
+        - texts: lista de strings.
+        Retorna:
+        - np.array de forma (len(texts), embedding_dim)
+        """
+        openai.api_key = self.api_key
+        response = openai.Embedding.create(
+            model="text-embedding-ada-002",  # Modelo de OpenAI para embeddings
+            input=texts
         )
-
-        # Si la respuesta contiene 'data', extraemos las embeddings
-        if hasattr(response, "data") and response.data:
-            embeddings_list = [item.embedding for item in response.data]
-        else:
-            raise Exception(f"Error al obtener embeddings: {response}")
-
+        
+        embeddings_list = [item['embedding'] for item in response['data']]
         return np.array(embeddings_list, dtype=np.float32)
 
+    def generate_embeddings(self, texts):
+        """
+        Genera embeddings usando el modelo seleccionado (Mistral o OpenAI).
+        Si se selecciona Groq, se usarán los embeddings de Mistral.
+        """
+        if self.api_key == MISTRAL_API_KEY or self.api_key == GROQ_API_KEY:
+            return self.generate_embeddings_mistral(texts)
+        elif self.api_key == OPENAI_API_KEY:
+            return self.generate_embeddings_openai(texts)
+        else:
+            raise Exception("API Key no válida")
 
     def create_faiss_index(self, docs):
         """
