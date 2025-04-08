@@ -1,13 +1,15 @@
 import streamlit as st
 from documentos import DocumentUploader
-from AI_model import analizar_documento_mistral, analizar_documento_openai, analizar_documento_groq # Versión adaptada a Mistral y OpenAI
-from faiss_manager import FAISSManager              # Versión adaptada a Mistral
+
+from AI_Mistral import analizar_documento_mistral_large_latest, analizar_documento_mistral_small_latest, analizar_documento_mistral_pixtral12b2409
+from AI_Groq import analizar_documento_groq
+from AI_Openai import analizar_documento_openai_gpt4o_mini
+from AI_Gemini import analizar_documento_gemini_2_5_pro_preview_03_25, analizar_documento_gemini_2_0_flash
+from faiss_manager import FAISSManager
 import faiss
 import os
 from dotenv import load_dotenv
 import time
-
-# Importa la nueva función para guardar todos los resultados en un Excel
 from excel import append_answers_to_excel  
 
 # Cargar variables de entorno
@@ -15,8 +17,9 @@ load_dotenv()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not MISTRAL_API_KEY and not OPENAI_API_KEY and not GROQ_API_KEY:
-    raise ValueError("⚠️ No se encontró la API Key de Mistral ni OpenAI.")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not MISTRAL_API_KEY and not OPENAI_API_KEY and not GROQ_API_KEY and not GEMINI_API_KEY:
+    raise ValueError("⚠️ No se encontró la API Key de Mistral ni OpenAI ni Groq ni Gemini.")
 
 st.set_page_config(
     page_title="Análisis de Incidentes Marítimos",
@@ -60,7 +63,6 @@ INCIDENT_QUESTIONS = [
 doc_uploader = DocumentUploader()
 
 col1, col2 = st.columns([1.5, 2])
-
 with col1:
     st.header("📂 Subir Reporte de Incidente Marítimo")
     uploaded_files = st.file_uploader(
@@ -79,9 +81,18 @@ with col1:
 with col2:
     st.title("🔎 Análisis del Incidente")
     
-    # Agregar un selector para elegir el modelo (incluyendo Groq)
-    modelo_seleccionado = st.selectbox("Selecciona el modelo de IA:", ["mistral-large-latest", "gpt-4o-mini", "llama3-8b-8192"])
-
+    # Agregar todos los modelos disponibles (incluyendo los modelos gratuitos de Mistral)
+    modelo_seleccionado = st.selectbox("Selecciona el modelo de IA:", 
+                                       [
+                                           "mistral-large-latest", 
+                                           "mistral-small-latest", 
+                                           "pixtral-12b-2409",
+                                           "gpt-4o-mini", 
+                                           "llama3-8b-8192",
+                                           "gemini-2.5-pro-preview-03-25",
+                                           "gemini-2.0-flash"
+                                       ])
+    
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
             st.info("Procesando los documentos y generando respuestas...")
@@ -90,8 +101,18 @@ with col2:
             
             for idx, file in enumerate(uploaded_files):
                 document_text = documents[idx]
-                # Usar Mistral para Groq también
-                local_faiss_manager = FAISSManager(api_key=MISTRAL_API_KEY if modelo_seleccionado == "mistral-large-latest" else OPENAI_API_KEY)
+                # Seleccionar la API key: si el modelo es de Mistral se utiliza MISTRAL_API_KEY,
+                # de lo contrario, se utiliza OPENAI_API_KEY
+                if modelo_seleccionado in ["mistral-large-latest", "mistral-small-latest", "pixtral-12b-2409"]:
+                    api_key_used = MISTRAL_API_KEY
+                elif modelo_seleccionado in ["gemini-2.5-pro-preview-03-25", "gemini-2.0-flash"]:
+                    api_key_used = GEMINI_API_KEY
+                elif modelo_seleccionado in ["gpt-4o-mini"]:
+                    api_key_used = OPENAI_API_KEY
+                else:
+                    api_key_used = MISTRAL_API_KEY
+                    
+                local_faiss_manager = FAISSManager(api_key=api_key_used)
                 local_faiss_manager.create_faiss_index([document_text])
                 
                 local_responses = {}
@@ -99,7 +120,6 @@ with col2:
                 faiss.normalize_L2(question_embeddings)
                 
                 time.sleep(2)
-
                 batch_size = 5
                 for batch_index in range(0, len(INCIDENT_QUESTIONS), batch_size):
                     current_questions = INCIDENT_QUESTIONS[batch_index: batch_index + batch_size]
@@ -115,18 +135,18 @@ with col2:
                     unique_chunks = list(set(all_context_chunks))
                     context_text = "\n".join(unique_chunks)
                     
-                    prompt = (
+                    prompt_text = (
                         "Please answer each of the following questions based on the CONTEXT provided.\n"
                         "Whenever possible, extract the **full expression or complete phrase** exactly as it appears in the CONTEXT.\n"
                         "If the information is not mentioned, respond with '-'.\n"
                         "Be precise and preserve details such as approximate times, dates, measurements, and any qualifiers (e.g., 'about', 'approximately').\n\n"
                         f"CONTEXT:\n{context_text}\n\n"
                     )
-
+                    
                     for i, question in enumerate(current_questions, start=batch_index + 1):
-                        prompt += f"{i}. {question}\n"
-
-                    prompt += (
+                        prompt_text += f"{i}. {question}\n"
+                    
+                    prompt_text += (
                         "\nProvide each answer with the same numeric format as the questions, "
                         "without adding additional explanations.\n"
                     )
@@ -136,17 +156,22 @@ with col2:
                     delay = 5
                     while retries < max_retries:
                         try:
-                            
                             if modelo_seleccionado == "mistral-large-latest":
-                                answer_str, model_used = analizar_documento_mistral(prompt)
+                                answer_str, model_used = analizar_documento_mistral_large_latest(prompt_text)
+                            elif modelo_seleccionado == "mistral-small-latest":
+                                answer_str, model_used = analizar_documento_mistral_small_latest(prompt_text)
+                            elif modelo_seleccionado == "pixtral-12b-2409":
+                                answer_str, model_used = analizar_documento_mistral_pixtral12b2409(prompt_text)
                             elif modelo_seleccionado == "llama3-8b-8192":
-                                answer_str, model_used = analizar_documento_groq(prompt)  # Usar Groq para la generación
-                            else:
-                                answer_str, model_used = analizar_documento_openai(prompt)
-
+                                answer_str, model_used = analizar_documento_groq(prompt_text)
+                            elif modelo_seleccionado == "gpt-4o-mini":
+                                answer_str, model_used = analizar_documento_openai_gpt4o_mini(prompt_text)
+                            elif modelo_seleccionado == "gemini-2.5-pro-preview-03-25":
+                                answer_str, model_used = analizar_documento_gemini_2_5_pro_preview_03_25(prompt_text)
+                            elif modelo_seleccionado == "gemini-2.0-flash":
+                                answer_str, model_used = analizar_documento_gemini_2_0_flash(prompt_text)
                             if answer_str is None:
                                 raise ValueError("La respuesta del modelo es None. Verifica la configuración del modelo o la API.")
-
                             break
                         except Exception as e:
                             if "429" in str(e):
@@ -187,7 +212,7 @@ with col2:
                     st.write(f"**{i}. {question}**")
                     st.write(f"➡️ **Respuesta:** {respuesta}")
                 st.write("---")
-
+            
             excel_filename = append_answers_to_excel(results, INCIDENT_QUESTIONS, save_path="../resultados.xlsx")
             st.success(f"Excel actualizado: {excel_filename}")
             

@@ -7,12 +7,13 @@ import os
 from dotenv import load_dotenv
 import openai
 import time
-import groq
+import google.generativeai as genai
 
 load_dotenv()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 class FAISSManager:
     def __init__(self, api_key):
@@ -84,11 +85,43 @@ class FAISSManager:
         """
         openai.api_key = self.api_key
         response = openai.Embedding.create(
-            model="text-embedding-ada-002",  # Modelo de OpenAI para embeddings
+            model="text-embedding-3-small",  # Modelo de OpenAI para embeddings
             input=texts
         )
         
         embeddings_list = [item['embedding'] for item in response['data']]
+        return np.array(embeddings_list, dtype=np.float32)
+    
+    def generate_embeddings_gemini(self, texts):
+        """
+        Genera embeddings usando el servicio de Gemini.
+        
+        Parámetros:
+        - texts: lista de strings.
+        
+        Retorna:
+        - np.array de forma (len(texts), embedding_dim)
+        
+        Nota:
+        Asegúrate de tener instalado e importado el paquete correspondiente para Gemini.
+        Este ejemplo asume que la API de Gemini utiliza una llamada similar a:
+        gemini.Embedding.create(model, input)
+        """
+        
+        # Configuramos la API key para Gemini utilizando la clave almacenada en self.api_key
+        genai.configure(api_key=self.api_key)
+
+        # Realizamos la petición a la API de Gemini para generar embeddings.
+        response = genai.generate_embeddings(
+            model="gemini-embedding-exp-03-07",  # Ajusta este identificador según el modelo de embeddings de Gemini.
+            input=texts
+        )
+        
+        try:
+            embeddings_list = [item['embedding'] for item in response['data']]
+        except Exception as e:
+            raise Exception(f"Error al obtener embeddings de Gemini: {e}")
+        
         return np.array(embeddings_list, dtype=np.float32)
 
     def generate_embeddings(self, texts):
@@ -100,6 +133,8 @@ class FAISSManager:
             return self.generate_embeddings_mistral(texts)
         elif self.api_key == OPENAI_API_KEY:
             return self.generate_embeddings_openai(texts)
+        elif self.api_key == GEMINI_API_KEY:
+            return self.generate_embeddings_gemini(texts)
         else:
             raise Exception("API Key no válida")
 
