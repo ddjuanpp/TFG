@@ -1,16 +1,24 @@
 import streamlit as st
 from documentos import DocumentUploader
 
-from AI_Mistral import analizar_documento_mistral_large_latest, analizar_documento_mistral_small_latest, analizar_documento_mistral_pixtral12b2409
-from AI_Groq import analizar_documento_groq
+from AI_Mistral import (
+    analizar_documento_mistral_large_latest, 
+    analizar_documento_mistral_small_latest, 
+    analizar_documento_mistral_pixtral12b2409
+)
 from AI_Openai import analizar_documento_openai_gpt4o_mini
-from AI_Gemini import analizar_documento_gemini_2_5_pro_preview_03_25, analizar_documento_gemini_2_0_flash
+from AI_Gemini import (
+    analizar_documento_gemini_2_0_flash, 
+    analizar_documento_gemini_1_5_flash_8b
+)
 from faiss_manager import FAISSManager
 import faiss
 import os
 from dotenv import load_dotenv
 import time
 from excel import append_answers_to_excel  
+import zipfile
+import io
 
 # Cargar variables de entorno
 load_dotenv()
@@ -81,17 +89,17 @@ with col1:
 with col2:
     st.title("🔎 Análisis del Incidente")
     
-    # Agregar todos los modelos disponibles (incluyendo los modelos gratuitos de Mistral)
-    modelo_seleccionado = st.selectbox("Selecciona el modelo de IA:", 
-                                       [
-                                           "mistral-large-latest", 
-                                           "mistral-small-latest", 
-                                           "pixtral-12b-2409",
-                                           "gpt-4o-mini", 
-                                           "llama3-8b-8192",
-                                           "gemini-2.5-pro-preview-03-25",
-                                           "gemini-2.0-flash"
-                                       ])
+    modelo_seleccionado = st.selectbox(
+        "Selecciona el modelo de IA:", 
+        [
+            "mistral-large-latest", 
+            "mistral-small-latest", 
+            "pixtral-12b-2409",
+            "gpt-4o-mini", 
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-8b"
+        ]
+    )
     
     if st.button("🚀 Analizar Reporte"):
         if doc_uploader.get_documents():
@@ -101,55 +109,73 @@ with col2:
             
             for idx, file in enumerate(uploaded_files):
                 document_text = documents[idx]
-                # Seleccionar la API key: si el modelo es de Mistral se utiliza MISTRAL_API_KEY,
-                # de lo contrario, se utiliza OPENAI_API_KEY
-                if modelo_seleccionado in ["mistral-large-latest", "mistral-small-latest", "pixtral-12b-2409"]:
+
+                # Decidir qué API key usar, en tu caso quizás no sea tan relevante
+                if modelo_seleccionado in [
+                    "mistral-large-latest", 
+                    "mistral-small-latest", 
+                    "pixtral-12b-2409",
+                    "gemini-2.0-flash",
+                    "gemini-1.5-flash-8b"
+                ]:
                     api_key_used = MISTRAL_API_KEY
-                elif modelo_seleccionado in ["gemini-2.5-pro-preview-03-25", "gemini-2.0-flash"]:
-                    api_key_used = GEMINI_API_KEY
-                elif modelo_seleccionado in ["gpt-4o-mini"]:
+                elif modelo_seleccionado in [
+                    "gpt-4o-mini",
+                ]:
                     api_key_used = OPENAI_API_KEY
-                else:
-                    api_key_used = MISTRAL_API_KEY
-                    
+
+
+                # Diccionario para almacenar las respuestas de este documento
+                local_responses = {}
+
+
                 local_faiss_manager = FAISSManager(api_key=api_key_used)
                 local_faiss_manager.create_faiss_index([document_text])
-                
-                local_responses = {}
+
+                # Generar embeddings de las preguntas
                 question_embeddings = local_faiss_manager.generate_embeddings(INCIDENT_QUESTIONS)
                 faiss.normalize_L2(question_embeddings)
-                
+
                 time.sleep(2)
                 batch_size = 5
                 for batch_index in range(0, len(INCIDENT_QUESTIONS), batch_size):
                     current_questions = INCIDENT_QUESTIONS[batch_index: batch_index + batch_size]
                     current_embeddings = question_embeddings[batch_index: batch_index + batch_size]
-                    
+
+                    # Reunir los K chunks más relevantes para cada embedding
                     all_context_chunks = []
                     for emb in current_embeddings:
                         k = 5
                         distances, indices = local_faiss_manager.index.search(emb.reshape(1, -1), k)
-                        relevant_chunks = [local_faiss_manager.chunks[i] for i in indices[0] if i >= 0]
+                        relevant_chunks = [
+                            local_faiss_manager.chunks[i] 
+                            for i in indices[0] 
+                            if i >= 0
+                        ]
                         all_context_chunks.extend(relevant_chunks)
-                    
+
+                    # Eliminar duplicados y combinarlos en un solo texto
                     unique_chunks = list(set(all_context_chunks))
                     context_text = "\n".join(unique_chunks)
-                    
+
+                    # Construir prompt con contexto + preguntas
                     prompt_text = (
                         "Please answer each of the following questions based on the CONTEXT provided.\n"
                         "Whenever possible, extract the **full expression or complete phrase** exactly as it appears in the CONTEXT.\n"
                         "If the information is not mentioned, respond with '-'.\n"
-                        "Be precise and preserve details such as approximate times, dates, measurements, and any qualifiers (e.g., 'about', 'approximately').\n\n"
+                        "Be precise and preserve details such as approximate times, dates, measurements, and any qualifiers.\n\n"
                         f"CONTEXT:\n{context_text}\n\n"
                     )
                     
                     for i, question in enumerate(current_questions, start=batch_index + 1):
                         prompt_text += f"{i}. {question}\n"
-                    
+
                     prompt_text += (
                         "\nProvide each answer with the same numeric format as the questions, "
                         "without adding additional explanations.\n"
                     )
+
+                    # Llamada al modelo
                     
                     retries = 0
                     max_retries = 7
@@ -162,14 +188,12 @@ with col2:
                                 answer_str, model_used = analizar_documento_mistral_small_latest(prompt_text)
                             elif modelo_seleccionado == "pixtral-12b-2409":
                                 answer_str, model_used = analizar_documento_mistral_pixtral12b2409(prompt_text)
-                            elif modelo_seleccionado == "llama3-8b-8192":
-                                answer_str, model_used = analizar_documento_groq(prompt_text)
                             elif modelo_seleccionado == "gpt-4o-mini":
                                 answer_str, model_used = analizar_documento_openai_gpt4o_mini(prompt_text)
-                            elif modelo_seleccionado == "gemini-2.5-pro-preview-03-25":
-                                answer_str, model_used = analizar_documento_gemini_2_5_pro_preview_03_25(prompt_text)
                             elif modelo_seleccionado == "gemini-2.0-flash":
                                 answer_str, model_used = analizar_documento_gemini_2_0_flash(prompt_text)
+                            elif modelo_seleccionado == "gemini-1.5-flash-8b":
+                                answer_str, model_used = analizar_documento_gemini_1_5_flash_8b(prompt_text)
                             if answer_str is None:
                                 raise ValueError("La respuesta del modelo es None. Verifica la configuración del modelo o la API.")
                             break
@@ -186,7 +210,8 @@ with col2:
                                 raise Exception(e)
                     else:
                         raise Exception("Se alcanzó el máximo de reintentos debido a la tasa de solicitudes.")
-                    
+
+                    # Parsear las respuestas
                     answer_lines = answer_str.strip().split("\n")
                     for line in answer_lines:
                         parts = line.split(". ", 1)
@@ -195,15 +220,17 @@ with col2:
                             respuesta = parts[1].strip()
                             if 1 <= num <= len(INCIDENT_QUESTIONS):
                                 local_responses[INCIDENT_QUESTIONS[num - 1]] = respuesta
-                    
+
                     time.sleep(2)
-                
+
+                # Guardamos la info final de este documento en results
                 results.append({
                     "name": file.name,
                     "IA_model": model_used,
                     "responses": local_responses
                 })
-            
+
+            # Mostrar resultados en pantalla
             st.subheader("📋 Resumen de los Incidentes")
             for result in results:
                 st.write(f"**Documento: {result['name']}**")
@@ -212,16 +239,49 @@ with col2:
                     st.write(f"**{i}. {question}**")
                     st.write(f"➡️ **Respuesta:** {respuesta}")
                 st.write("---")
-            
+
+            # Guardar en Excel
             excel_filename = append_answers_to_excel(results, INCIDENT_QUESTIONS, save_path="../resultados.xlsx")
-            st.success(f"Excel actualizado: {excel_filename}")
+            st.success(f"Excel actualizado")
+
+            # AGREGAR ESTE BLOQUE PARA CREAR UN EXCEL POR CADA MODELO:
+            from collections import defaultdict
+
+            # Agrupamos los resultados por modelo (IA_model)
+            model_results = defaultdict(list)
+            for r in results:
+                model_name = r["IA_model"]
+                model_results[model_name].append(r)
+
+            # Para cada modelo, guardamos o actualizamos un Excel específico
+            for model_name, model_data in model_results.items():
+                model_excel_path = f"../{model_name}.xlsx"
+                model_excel_filename = append_answers_to_excel(model_data, INCIDENT_QUESTIONS, save_path=model_excel_path)
+                st.success(f"Excel del modelo '{model_name}' actualizado")
             
-            with open(excel_filename, "rb") as f:
-                st.download_button(
-                    label="Descargar Excel",
-                    data=f,
-                    file_name=os.path.basename(excel_filename),
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            excel_files = [excel_filename]
+            for model_name in model_results:
+                model_excel_path = f"../{model_name}.xlsx"
+                excel_files.append(model_excel_path)
+
+            # Crear un buffer en memoria para el archivo ZIP
+            zip_buffer = io.BytesIO()
+
+            # Abrir el zip y agregar cada archivo Excel, usando solo su nombre (sin ruta completa)
+            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+                for file_path in excel_files:
+                    arcname = os.path.basename(file_path)
+                    zip_file.write(file_path, arcname=arcname)
+
+            # Regresar el cursor al inicio del buffer para la descarga
+            zip_buffer.seek(0)
+
+            # Botón para descargar el archivo ZIP que contiene todos los Excels
+            st.download_button(
+                label="Descargar todos los Excels en un ZIP",
+                data=zip_buffer,
+                file_name="excels.zip",
+                mime="application/zip"
+            )
         else:
             st.warning("⚠️ Primero sube un archivo PDF.")

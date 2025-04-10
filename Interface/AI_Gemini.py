@@ -1,40 +1,54 @@
 # AI_Gemini.py
 import os
-from google import genai
+import sys
 import google.generativeai as genai
+from dotenv import load_dotenv
 
-def analizar_documento_gemini_2_5_pro_preview_03_25(prompt, contexto=""):
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    if not GEMINI_API_KEY:
-        raise ValueError("No se encontró la API key. Asegúrate de definir GEMINI_API_KEY en tu entorno.")
+load_dotenv()
 
-    prompt_completo = f"{contexto}\n\n{prompt}"
-    
-    # Configuramos la API key para PaLM / Google Generative AI
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    # Utilizamos generate_chat (o generate_text) con un modelo existente
-    response = client.models.generate_chat(
-        model="gemini-2.5-pro-preview-03-25",  # Reemplaza por el modelo de tu preferencia
-        contents= prompt_completo
-    )
-    
-    # Extraemos la respuesta
-    # Dependiendo de la versión de la librería, la estructura del response puede variar
-    return response.last, "gemini-2.5-pro-preview-03-25"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 def analizar_documento_gemini_2_0_flash(prompt, contexto=""):
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    """
+    Analiza un documento utilizando el modelo "gemini-2.0-flash".
+    
+    Args:
+        prompt (str): El contenido principal del documento.
+        contexto (str, optional): Texto adicional que aporta contexto. Defaults to "".
+        
+    Returns:
+        tuple: Una tupla (respuesta, nombre_del_modelo) con el texto generado y el identificador del modelo.
+    """
     if not GEMINI_API_KEY:
         raise ValueError("No se encontró la API key. Asegúrate de definir GEMINI_API_KEY en tu entorno.")
 
-    prompt_completo = f"{contexto}\n\n{prompt}"
-    
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    response = client.models.generate_chat(
-        model="gemini-2.0-flash",  # O "models/text-bison-001"
-        contents= prompt_completo
+    prompt_completo = f"{contexto}\n\n{prompt}" if contexto else prompt
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    response = model.generate_content(
+        prompt_completo
     )
 
-    return response.last, "gemini-2.0-flash"
+    return response.text, "gemini-2.0-flash"
+
+def analizar_documento_gemini_1_5_flash_8b(prompt, contexto=""):
+    """
+    Analiza un documento utilizando el modelo "gemini-1.5-flash-8b".
+    
+    Args:
+        prompt (str): El contenido principal del documento.
+        contexto (str, optional): Texto adicional que aporta contexto. Defaults to "".
+    """
+    if not GEMINI_API_KEY:
+        raise ValueError("No se encontró la API key. Asegúrate de definir GEMINI_API_KEY en tu entorno.")
+
+    prompt_completo = f"{contexto}\n\n{prompt}" if contexto else prompt
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash-8b")
+    response = model.generate_content(
+        prompt_completo
+    )
+
+    return response.text, "gemini-1.5-flash-8b"
