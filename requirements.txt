@@ -7,3 +7,8 @@ requests
 sentencepiece
 cohere
 mistralai
+openai
+dotenv
+google
+google-generativeai
+openpyxl
